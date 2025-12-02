@@ -1,38 +1,48 @@
-# config.py
-"""
-所有配置都在这里
-修改参数很方便
-"""
+from pathlib import Path
+
 
 class Config:
-    # ============ 数据配置 ============
-    DATA_PATH = './data'          # RAVDESS数据路径
-    SAMPLE_RATE = 16000                    # 采样率（降低到16k节省显存）
-    AUDIO_DURATION = 3.0                   # 音频时长（秒）
-    
-    # ============ 特征配置 ============
-    N_MELS = 80                            # Mel频谱bins（降低维度）
-    N_FFT = 512                            # FFT窗口
-    HOP_LENGTH = 160                       # 帧移
-    MAX_TIME_STEPS = 300                   # 最大时间步（3秒音频）
-    
-    # ============ 模型配置 ============
-    D_MODEL = 256                          # 模型维度（适中）
-    NUM_HEADS = 8                          # 注意力头数
-    NUM_LAYERS = 6                         # Transformer层数
-    D_FF = 1024                            # FFN维度
+    DATA_PATH = Path('./data')
+    SAMPLE_RATE = 16000
+    AUDIO_DURATION = 3.0
+
+    N_MELS = 80
+    N_FFT = 512
+    HOP_LENGTH = 160
+    MAX_TIME_STEPS = 300
+    MEL_TIME_STEPS = MAX_TIME_STEPS
+    F_MIN = 0.0
+    F_MAX = SAMPLE_RATE / 2
+
+    D_MODEL = 256
+    NUM_HEADS = 8
+    NUM_LAYERS = 6
+    D_FF = 1024
     DROPOUT = 0.1
-    
-    # ============ 训练配置 ============
-    BATCH_SIZE = 32                        # 批次大小
+
+    BATCH_SIZE = 32
     NUM_EPOCHS = 100
-    LEARNING_RATE = 0.0001
+    LEARNING_RATE = 1e-4
     WARMUP_STEPS = 500
-    
-    # ============ 其他 ============
-    NUM_CLASSES = 4                        # 情感类别数
+    WEIGHT_DECAY = 1e-4
+    TRAIN_SPLIT = 0.8
+    NUM_WORKERS = 2
+
+    NUM_CLASSES = 4
     EMOTION_LABELS = ['neutral', 'happy', 'sad', 'angry']
-    DEVICE = 'cuda'                        # A100 GPU
+    DEVICE = 'cuda'
     SEED = 42
 
+    CHECKPOINT_DIR = Path('./checkpoints')
+    LOG_DIR = Path('./runs')
+    EARLY_STOPPING = False
+    EARLY_STOPPING_PATIENCE = 10
+
+    @classmethod
+    def init_dirs(cls):
+        cls.CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+        cls.LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+
+Config.init_dirs()
 config = Config()
