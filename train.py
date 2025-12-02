@@ -149,65 +149,42 @@ class Trainer:
         return avg_loss, avg_acc
     
     def validate(self, epoch):
-        """
-        验证模型
-        
-        参数:
-            epoch: 当前epoch编号
-        
-        返回:
-            avg_loss: 平均损失
-            avg_acc: 平均准确率
-        """
-        self.model.eval()  # 设置为评估模式
-        
-        total_loss = 0.0
+        """验证模型"""
+        self.model.eval()
+        total_loss = 0
         correct = 0
         total = 0
         
-        # 混淆矩阵 (用于详细分析)
-        confusion_matrix = np.zeros((config.NUM_CLASSES, config.NUM_CLASSES), dtype=int)
-        
-        # 进度条
-        pbar = tqdm(self.val_loader, desc=f'Epoch {epoch}/{config.NUM_EPOCHS} [Val]  ')
-        
-        with torch.no_grad():  # 不计算梯度
-            for mels, labels in pbar:
-                # 1. 数据移到设备
-                mels = mels.to(self.device)
+        with torch.no_grad():
+            pbar = tqdm(self.val_loader, desc=f'Epoch {epoch}/{self.config.num_epochs} [Val]  ')
+            
+            for batch_idx, (images, labels) in enumerate(pbar):
+                images = images.to(self.device)
                 labels = labels.to(self.device)
                 
-                # 2. 前向传播
-                outputs = self.model(mels)
+                outputs = self.model(images)
                 loss = self.criterion(outputs, labels)
                 
-                # 3. 统计
                 total_loss += loss.item()
-                _, predicted = torch.max(outputs, 1)
-                correct += (predicted == labels).sum().item()
+                _, predicted = outputs.max(1)
                 total += labels.size(0)
+                correct += predicted.eq(labels).sum().item()
                 
-                # 4. 更新混淆矩阵
-                for true, pred in zip(labels.cpu().numpy(), predicted.cpu().numpy()):
-                    confusion_matrix[true][pred] += 1
+                # 安全的损失计算
+                num_batches = batch_idx + 1
+                current_loss = total_loss / num_batches
+                current_acc = 100. * correct / total if total > 0 else 0
                 
-                # 5. 更新进度条
-                current_loss = total_loss / (len(pbar) - len(self.val_loader) + pbar.n)
-                current_acc = 100.0 * correct / total
                 pbar.set_postfix({
                     'loss': f'{current_loss:.4f}',
                     'acc': f'{current_acc:.2f}%'
                 })
         
-        # 计算平均值
-        avg_loss = total_loss / len(self.val_loader)
-        avg_acc = 100.0 * correct / total
+        # 计算最终指标
+        avg_loss = total_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0
+        accuracy = 100. * correct / total if total > 0 else 0
         
-        # 打印混淆矩阵
-        if epoch % 10 == 0:  # 每10个epoch打印一次
-            self._print_confusion_matrix(confusion_matrix, epoch)
-        
-        return avg_loss, avg_acc
+        return avg_loss, accuracy
     
     def _print_confusion_matrix(self, cm, epoch):
         """
