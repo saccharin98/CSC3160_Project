@@ -156,7 +156,7 @@ class Trainer:
         total = 0
         
         with torch.no_grad():
-            pbar = tqdm(self.val_loader, desc=f'Epoch {epoch}/{self.config.num_epochs} [Val]  ')
+            pbar = tqdm(self.val_loader, desc=f'Epoch {epoch}/{config.NUM_EPOCHS} [Val]  ')
             
             for batch_idx, (images, labels) in enumerate(pbar):
                 images = images.to(self.device)
