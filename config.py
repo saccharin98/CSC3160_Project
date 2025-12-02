@@ -6,7 +6,7 @@
 
 class Config:
     # ============ 数据配置 ============
-    DATA_PATH = './data/RAVDESS'          # RAVDESS数据路径
+    DATA_PATH = './data'          # RAVDESS数据路径
     SAMPLE_RATE = 16000                    # 采样率（降低到16k节省显存）
     AUDIO_DURATION = 3.0                   # 音频时长（秒）
     

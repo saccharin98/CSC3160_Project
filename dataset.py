@@ -1,180 +1,351 @@
 # dataset.py
 """
-简单的数据加载
-不用缓存，不用复杂增强
-先跑通再优化
+RAVDESS语音情感数据集加载器
+
+RAVDESS数据集说明:
+- 24个演员 (12男12女)
+- 每个演员60个音频文件
+- 总共1440个音频文件
+
+文件命名格式: 03-01-01-01-01-01-01.wav
+              |  |  |  |  |  |  |
+              |  |  |  |  |  |  +- 重复次数 (01/02)
+              |  |  |  |  |  +---- 演员ID (01-24)
+              |  |  |  |  +------- 情感强度 (01=normal, 02=strong)
+              |  |  |  +---------- 语句ID (01/02)
+              |  |  +------------- 情感ID (01-08)
+              |  +---------------- 声音通道 (01=speech)
+              +------------------- 模态 (03=audio-video)
+
+情感ID对应:
+01 = neutral    (中性)
+02 = calm       (平静)
+03 = happy      (快乐)
+04 = sad        (悲伤)
+05 = angry      (愤怒)
+06 = fearful    (恐惧)
+07 = disgust    (厌恶)
+08 = surprised  (惊讶)
 """
 
 import torch
-from torch.utils.data import Dataset, DataLoader
-import librosa
+from torch.utils.data import Dataset
+import torchaudio
+import torchaudio.transforms as T
 import numpy as np
 from pathlib import Path
+from tqdm import tqdm
+
 from config import config
 
 
-class SimpleEmotionDataset(Dataset):
+class RAVDESSDataset(Dataset):
     """
-    简单的情感数据集
-    只做最基本的处理
+    RAVDESS语音情感识别数据集
+    
+    功能:
+    1. 加载.wav音频文件
+    2. 提取Mel频谱图特征
+    3. 归一化处理
+    4. 返回(特征, 标签)对
     """
     
-    def __init__(self, audio_files, labels, is_train=True):
+    def __init__(self, data_path, transform=None):
         """
         参数:
-            audio_files: 音频文件路径列表
-            labels: 标签列表
-            is_train: 是否训练集（用于数据增强）
+            data_path: 数据集根目录路径 (包含Actor_XX文件夹)
+            transform: 可选的数据增强变换
         """
-        self.audio_files = audio_files
-        self.labels = labels
-        self.is_train = is_train
+        self.data_path = Path(data_path)
+        self.transform = transform
         
+        # 检查数据路径
+        if not self.data_path.exists():
+            raise FileNotFoundError(f"数据路径不存在: {self.data_path}")
+        
+        # 加载所有音频文件路径和标签
+        self.audio_files = []
+        self.labels = []
+        
+        self._load_dataset()
+        
+        # Mel频谱图转换器
+        self.mel_transform = T.MelSpectrogram(
+            sample_rate=config.SAMPLE_RATE,
+            n_fft=config.N_FFT,
+            hop_length=config.HOP_LENGTH,
+            n_mels=config.N_MELS,
+            f_min=config.F_MIN,
+            f_max=config.F_MAX
+        )
+        
+        # 振幅转分贝
+        self.amplitude_to_db = T.AmplitudeToDB()
+        
+    def _load_dataset(self):
+        """
+        加载数据集，扫描所有Actor文件夹
+        """
+        print(f"加载数据集: {self.data_path}")
+        
+        # 查找所有Actor_XX文件夹
+        actor_folders = sorted(self.data_path.glob('Actor_*'))
+        
+        if len(actor_folders) == 0:
+            raise FileNotFoundError(
+                f"没有找到Actor_XX文件夹！\n"
+                f"请确保数据集已解压到: {self.data_path}\n"
+                f"应该包含: Actor_01, Actor_02, ..., Actor_24"
+            )
+        
+        print(f"找到 {len(actor_folders)} 个演员文件夹")
+        
+        # 遍历每个演员文件夹
+        for actor_folder in tqdm(actor_folders, desc="加载演员数据"):
+            # 获取该文件夹下所有.wav文件
+            wav_files = list(actor_folder.glob('*.wav'))
+            
+            for wav_file in wav_files:
+                # 从文件名提取情感标签
+                emotion_id = self._extract_emotion_from_filename(wav_file.name)
+                
+                if emotion_id is not None:
+                    self.audio_files.append(wav_file)
+                    self.labels.append(emotion_id)
+        
+        print(f"✓ 成功加载 {len(self.audio_files)} 个音频文件")
+        print(f"  情感分布: {self._get_emotion_distribution()}")
+    
+    def _extract_emotion_from_filename(self, filename):
+        """
+        从文件名提取情感ID
+        
+        文件名格式: 03-01-01-01-01-01-01.wav
+                          ^^
+                          情感ID (第3个字段)
+        
+        参数:
+            filename: 文件名
+        
+        返回:
+            emotion_id: 情感ID (0-7)，失败返回None
+        """
+        try:
+            parts = filename.split('-')
+            if len(parts) >= 3:
+                emotion_code = int(parts[2])  # 第3个字段是情感
+                # 情感ID从1开始，转换为0-based索引
+                emotion_id = emotion_code - 1
+                
+                # 验证范围 (0-7 对应8种情感)
+                if 0 <= emotion_id < config.NUM_CLASSES:
+                    return emotion_id
+        except (ValueError, IndexError):
+            pass
+        
+        return None
+    
+    def _get_emotion_distribution(self):
+        """
+        获取情感分布统计
+        
+        返回:
+            dict: {情感名: 数量}
+        """
+        distribution = {}
+        for label in self.labels:
+            emotion_name = config.EMOTION_LABELS[label]
+            distribution[emotion_name] = distribution.get(emotion_name, 0) + 1
+        
+        return distribution
+    
+    def _load_audio(self, audio_path):
+        """
+        加载音频文件
+        
+        参数:
+            audio_path: 音频文件路径
+        
+        返回:
+            waveform: 音频波形 (1, samples)
+            sample_rate: 采样率
+        """
+        waveform, sample_rate = torchaudio.load(audio_path)
+        
+        # 转换为单声道
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+        
+        # 重采样（如果需要）
+        if sample_rate != config.SAMPLE_RATE:
+            resampler = T.Resample(sample_rate, config.SAMPLE_RATE)
+            waveform = resampler(waveform)
+        
+        return waveform
+    
+    def _extract_mel_spectrogram(self, waveform):
+        """
+        提取Mel频谱图特征
+        
+        参数:
+            waveform: 音频波形 (1, samples)
+        
+        返回:
+            mel_spec: Mel频谱图 (n_mels, time)
+        """
+        # 1. 计算Mel频谱
+        mel_spec = self.mel_transform(waveform)  # (1, n_mels, time)
+        
+        # 2. 转换为分贝
+        mel_spec = self.amplitude_to_db(mel_spec)  # (1, n_mels, time)
+        
+        # 3. 去掉batch维度
+        mel_spec = mel_spec.squeeze(0)  # (n_mels, time)
+        
+        return mel_spec
+    
+    def _normalize(self, mel_spec):
+        """
+        归一化Mel频谱图
+        
+        参数:
+            mel_spec: Mel频谱图 (n_mels, time)
+        
+        返回:
+            normalized: 归一化后的频谱图
+        """
+        # 标准化到 [-1, 1]
+        mel_mean = mel_spec.mean()
+        mel_std = mel_spec.std()
+        
+        if mel_std > 0:
+            normalized = (mel_spec - mel_mean) / mel_std
+        else:
+            normalized = mel_spec - mel_mean
+        
+        return normalized
+    
+    def _resize_mel(self, mel_spec, target_length=128):
+        """
+        调整Mel频谱图到固定长度
+        
+        参数:
+            mel_spec: Mel频谱图 (n_mels, time)
+            target_length: 目标时间长度
+        
+        返回:
+            resized: 调整后的频谱图 (n_mels, target_length)
+        """
+        current_length = mel_spec.shape[1]
+        
+        if current_length > target_length:
+            # 截断：取中间部分
+            start = (current_length - target_length) // 2
+            mel_spec = mel_spec[:, start:start + target_length]
+        
+        elif current_length < target_length:
+            # 填充：两边补零
+            pad_length = target_length - current_length
+            pad_left = pad_length // 2
+            pad_right = pad_length - pad_left
+            
+            mel_spec = torch.nn.functional.pad(
+                mel_spec,
+                (pad_left, pad_right),
+                mode='constant',
+                value=0
+            )
+        
+        return mel_spec
+    
     def __len__(self):
+        """
+        返回数据集大小
+        """
         return len(self.audio_files)
     
     def __getitem__(self, idx):
-        """获取一个样本"""
+        """
+        获取一个样本
+        
+        参数:
+            idx: 索引
+        
+        返回:
+            mel_spec: Mel频谱图 (n_mels, time)
+            label: 情感标签 (0-7)
+        """
         # 1. 加载音频
         audio_path = self.audio_files[idx]
-        y, sr = librosa.load(audio_path, sr=config.SAMPLE_RATE, duration=config.AUDIO_DURATION)
+        waveform = self._load_audio(audio_path)
         
-        # 2. 填充或截断到固定长度
-        target_length = int(config.AUDIO_DURATION * config.SAMPLE_RATE)
-        if len(y) < target_length:
-            y = np.pad(y, (0, target_length - len(y)))
-        else:
-            y = y[:target_length]
+        # 2. 提取Mel频谱图
+        mel_spec = self._extract_mel_spectrogram(waveform)
         
-        # 3. 提取Mel频谱
-        mel_spec = librosa.feature.melspectrogram(
-            y=y,
-            sr=config.SAMPLE_RATE,
-            n_mels=config.N_MELS,
-            n_fft=config.N_FFT,
-            hop_length=config.HOP_LENGTH
-        )
+        # 3. 调整到固定大小
+        mel_spec = self._resize_mel(mel_spec, config.MEL_TIME_STEPS)
         
-        # 4. 转换为dB
-        mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+        # 4. 归一化
+        mel_spec = self._normalize(mel_spec)
         
-        # 5. 归一化到[-1, 1]
-        mel_spec_db = (mel_spec_db - mel_spec_db.mean()) / (mel_spec_db.std() + 1e-8)
+        # 5. 转置：(time, n_mels) - Transformer输入格式
+        mel_spec = mel_spec.transpose(0, 1)
         
-        # 6. 调整时间维度
-        if mel_spec_db.shape[1] > config.MAX_TIME_STEPS:
-            mel_spec_db = mel_spec_db[:, :config.MAX_TIME_STEPS]
-        else:
-            pad_width = config.MAX_TIME_STEPS - mel_spec_db.shape[1]
-            mel_spec_db = np.pad(mel_spec_db, ((0, 0), (0, pad_width)), mode='constant')
+        # 6. 获取标签
+        label = self.labels[idx]
         
-        # 7. 转换为tensor: (time, n_mels)
-        mel_tensor = torch.FloatTensor(mel_spec_db.T)  # 转置：(time, n_mels)
+        # 7. 可选的数据增强
+        if self.transform:
+            mel_spec = self.transform(mel_spec)
         
-        # 8. 标签
-        label = torch.tensor(self.labels[idx], dtype=torch.long)
-        
-        return mel_tensor, label
+        return mel_spec, label
 
 
-def load_ravdess_data():
-    """
-    加载RAVDESS数据集
-    
-    文件名格式: 03-01-05-01-01-01-12.wav
-    第3个数字是情感: 01=neutral, 03=happy, 04=sad, 05=angry
-    
-    返回:
-        audio_files: 音频路径列表
-        labels: 标签列表
-    """
-    data_path = Path(config.DATA_PATH)
-    
-    audio_files = []
-    labels = []
-    
-    # 情感映射
-    emotion_map = {
-        '01': 0,  # neutral
-        '03': 1,  # happy
-        '04': 2,  # sad
-        '05': 3   # angry
-    }
-    
-    # 遍历所有Actor文件夹
-    for actor_folder in sorted(data_path.glob('Actor_*')):
-        for audio_file in actor_folder.glob('*.wav'):
-            # 解析文件名
-            parts = audio_file.stem.split('-')
-            emotion_code = parts[2]
-            
-            # 只选择我们需要的4种情感
-            if emotion_code in emotion_map:
-                audio_files.append(str(audio_file))
-                labels.append(emotion_map[emotion_code])
-    
-    print(f"✓ 加载了 {len(audio_files)} 个音频文件")
-    print(f"  标签分布: {np.bincount(labels)}")
-    
-    return audio_files, labels
+# ============================================
+# 测试代码
+# ============================================
 
-
-def create_dataloaders():
+if __name__ == '__main__':
     """
-    创建训练和测试数据加载器
-    
-    返回:
-        train_loader, test_loader
+    测试数据集加载
     """
-    from sklearn.model_selection import train_test_split
-    
-    # 加载数据
-    audio_files, labels = load_ravdess_data()
-    
-    # 划分训练集和测试集（80%-20%）
-    train_files, test_files, train_labels, test_labels = train_test_split(
-        audio_files, labels,
-        test_size=0.2,
-        random_state=config.SEED,
-        stratify=labels  # 保持标签分布
-    )
-    
-    print(f"\n数据划分:")
-    print(f"  训练集: {len(train_files)} 样本")
-    print(f"  测试集: {len(test_files)} 样本")
+    print("=" * 70)
+    print("测试RAVDESS数据集")
+    print("=" * 70)
     
     # 创建数据集
-    train_dataset = SimpleEmotionDataset(train_files, train_labels, is_train=True)
-    test_dataset = SimpleEmotionDataset(test_files, test_labels, is_train=False)
+    dataset = RAVDESSDataset(config.DATA_PATH)
     
-    # 创建数据加载器
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=config.BATCH_SIZE,
+    print(f"\n数据集信息:")
+    print(f"  总样本数: {len(dataset)}")
+    print(f"  情感类别: {config.NUM_CLASSES}")
+    print(f"  情感标签: {config.EMOTION_LABELS}")
+    
+    # 测试获取一个样本
+    print(f"\n测试样本获取:")
+    mel_spec, label = dataset[0]
+    
+    print(f"  Mel频谱形状: {mel_spec.shape}")
+    print(f"  标签: {label} ({config.EMOTION_LABELS[label]})")
+    print(f"  数据类型: {mel_spec.dtype}")
+    print(f"  数值范围: [{mel_spec.min():.2f}, {mel_spec.max():.2f}]")
+    
+    # 测试批量加载
+    print(f"\n测试批量加载:")
+    from torch.utils.data import DataLoader
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=4,
         shuffle=True,
-        num_workers=4,
-        pin_memory=True  # 加速GPU传输
+        num_workers=0
     )
     
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=config.BATCH_SIZE,
-        shuffle=False,
-        num_workers=4,
-        pin_memory=True
-    )
+    batch_mel, batch_labels = next(iter(dataloader))
+    print(f"  批次Mel频谱形状: {batch_mel.shape}")
+    print(f"  批次标签形状: {batch_labels.shape}")
+    print(f"  批次标签: {batch_labels.tolist()}")
     
-    return train_loader, test_loader
-
-
-# 测试代码
-if __name__ == '__main__':
-    # 测试数据加载
-    train_loader, test_loader = create_dataloaders()
-    
-    # 查看一个batch
-    for mel_spec, label in train_loader:
-        print(f"\nBatch形状:")
-        print(f"  Mel频谱: {mel_spec.shape}")  # (batch, time, n_mels)
-        print(f"  标签: {label.shape}")         # (batch,)
-        break
+    print("\n" + "=" * 70)
+    print("✓ 数据集测试完成")
+    print("=" * 70)
