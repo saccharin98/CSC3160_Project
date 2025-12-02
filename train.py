@@ -357,7 +357,9 @@ def main():
         torch.cuda.manual_seed(config.SEED)
     
     # 2. 设置设备
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device(
+        'cuda' if config.DEVICE == 'cuda' and torch.cuda.is_available() else 'cpu'
+    )
     print(f"\n设备: {device}")
     if device.type == 'cuda':
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
