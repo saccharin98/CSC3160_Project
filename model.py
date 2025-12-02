@@ -1,4 +1,3 @@
-# model.py
 """
 语音情感识别的Transformer模型
 
@@ -36,7 +35,7 @@ class PositionalEncoding(nn.Module):
     def __init__(self, d_model, max_len=5000, dropout=0.1):
         """
         参数:
-            d_model: 模型维度 (256)
+            d_model: 模型维度 (512)
             max_len: 最大序列长度 (5000足够了)
             dropout: Dropout比例
         """
@@ -95,9 +94,9 @@ class TransformerEncoderLayer(nn.Module):
     def __init__(self, d_model, num_heads, d_ff, dropout=0.1):
         """
         参数:
-            d_model: 模型维度 (256)
+            d_model: 模型维度 (512)
             num_heads: 注意力头数 (8)
-            d_ff: 前馈网络维度 (1024)
+            d_ff: 前馈网络维度 (2048)
             dropout: Dropout比例
         """
         super().__init__()
@@ -110,13 +109,13 @@ class TransformerEncoderLayer(nn.Module):
             batch_first=True  # 输入格式: (batch, seq, feature)
         )
         
-        # 2. 前馈网络 (两层全连接)
+        # 2. 前馈网络 (两层全连接) + Dropout
         self.feed_forward = nn.Sequential(
             nn.Linear(d_model, d_ff),
             nn.ReLU(),
-            nn.Dropout(dropout),
+            nn.Dropout(dropout),  # 添加 Dropout
             nn.Linear(d_ff, d_model),
-            nn.Dropout(dropout)
+            nn.Dropout(dropout)   # 添加 Dropout
         )
         
         # 3. LayerNorm
@@ -156,17 +155,23 @@ class SpeechEmotionTransformer(nn.Module):
     
     完整流程:
     输入Mel频谱 → 线性投影 → 位置编码 → Transformer编码器 → 全局池化 → 分类
+    
+    改进版（4倍参数量 + 适度 Dropout）:
+    - d_model: 256 -> 512 (2倍)
+    - d_ff: 1024 -> 2048 (2倍)
+    - num_layers: 6 -> 8 (增加层数)
+    - 分类头加深，添加 Dropout
     """
     
     def __init__(
         self,
         input_dim=80,           # Mel频谱维度
-        d_model=256,            # 模型维度
+        d_model=512,            # 模型维度 (从256扩大到512)
         num_heads=8,            # 注意力头数
-        num_layers=6,           # Transformer层数
-        d_ff=1024,              # 前馈网络维度
+        num_layers=8,           # Transformer层数 (从6增加到8)
+        d_ff=2048,              # 前馈网络维度 (从1024扩大到2048)
         num_classes=4,          # 情感类别数
-        dropout=0.1,            # Dropout比例
+        dropout=0.2,            # Dropout比例 (不激进: 0.2)
         max_len=5000            # 最大序列长度
     ):
         super().__init__()
@@ -176,8 +181,11 @@ class SpeechEmotionTransformer(nn.Module):
         self.num_classes = num_classes
         
         # 1. 输入投影层: 将Mel频谱投影到d_model维度
-        # (batch, time, 80) -> (batch, time, 256)
-        self.input_projection = nn.Linear(input_dim, d_model)
+        # (batch, time, 80) -> (batch, time, 512)
+        self.input_projection = nn.Sequential(
+            nn.Linear(input_dim, d_model),
+            nn.Dropout(dropout)  # 添加 Dropout
+        )
         
         # 2. 位置编码
         self.pos_encoder = PositionalEncoding(d_model, max_len, dropout)
@@ -188,12 +196,15 @@ class SpeechEmotionTransformer(nn.Module):
             for _ in range(num_layers)
         ])
         
-        # 4. 分类头
+        # 4. 分类头（加深 + Dropout）
         self.classifier = nn.Sequential(
-            nn.Linear(d_model, d_model // 2),  # 256 -> 128
+            nn.Linear(d_model, d_model),          # 512 -> 512
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(d_model // 2, num_classes)  # 128 -> 4
+            nn.Dropout(dropout),                   # Dropout
+            nn.Linear(d_model, d_model // 2),     # 512 -> 256
+            nn.ReLU(),
+            nn.Dropout(dropout),                   # Dropout
+            nn.Linear(d_model // 2, num_classes)  # 256 -> 4
         )
         
         # 5. 初始化权重
@@ -220,7 +231,7 @@ class SpeechEmotionTransformer(nn.Module):
             logits: (batch, num_classes)
         """
         # 1. 输入投影
-        # (batch, time, 80) -> (batch, time, 256)
+        # (batch, time, 80) -> (batch, time, 512)
         x = self.input_projection(x)
         
         # 2. 位置编码
@@ -231,11 +242,11 @@ class SpeechEmotionTransformer(nn.Module):
             x = layer(x, mask)
         
         # 4. 全局平均池化 (在时间维度上)
-        # (batch, time, 256) -> (batch, 256)
+        # (batch, time, 512) -> (batch, 512)
         x = torch.mean(x, dim=1)
         
         # 5. 分类
-        # (batch, 256) -> (batch, 4)
+        # (batch, 512) -> (batch, 4)
         logits = self.classifier(x)
         
         return logits
@@ -254,12 +265,12 @@ def create_model():
     """
     model = SpeechEmotionTransformer(
         input_dim=config.N_MELS,
-        d_model=config.D_MODEL,
+        d_model=512,              # 扩大为 512
         num_heads=config.NUM_HEADS,
-        num_layers=config.NUM_LAYERS,
-        d_ff=config.D_FF,
+        num_layers=8,             # 增加到 8 层
+        d_ff=2048,                # 扩大为 2048
         num_classes=config.NUM_CLASSES,
-        dropout=config.DROPOUT,
+        dropout=0.2,              # 不激进的 Dropout: 0.2
         max_len=config.MAX_TIME_STEPS
     )
     
@@ -272,7 +283,7 @@ def create_model():
 
 if __name__ == '__main__':
     print("=" * 60)
-    print("测试Transformer模型")
+    print("测试Transformer模型 (4倍参数量版本)")
     print("=" * 60)
     
     # 1. 创建模型
