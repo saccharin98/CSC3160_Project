@@ -28,8 +28,17 @@ class Config:
     TRAIN_SPLIT = 0.8
     NUM_WORKERS = 2
 
-    NUM_CLASSES = 4
-    EMOTION_LABELS = ['neutral', 'happy', 'sad', 'angry']
+    NUM_CLASSES = 8
+    EMOTION_LABELS = [
+        'neutral',
+        'calm',
+        'happy',
+        'sad',
+        'angry',
+        'fearful',
+        'disgust',
+        'surprised'
+    ]
     DEVICE = 'cuda'
     SEED = 42
 

@@ -165,7 +165,7 @@ class SpeechEmotionTransformer(nn.Module):
         num_heads=8,            # 注意力头数
         num_layers=6,           # Transformer层数
         d_ff=1024,              # 前馈网络维度
-        num_classes=4,          # 情感类别数
+        num_classes=config.NUM_CLASSES,  # 情感类别数
         dropout=0.1,            # Dropout比例
         max_len=5000            # 最大序列长度
     ):
@@ -193,7 +193,7 @@ class SpeechEmotionTransformer(nn.Module):
             nn.Linear(d_model, d_model // 2),  # 256 -> 128
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(d_model // 2, num_classes)  # 128 -> 4
+            nn.Linear(d_model // 2, num_classes)  # 128 -> num_classes
         )
         
         # 5. 初始化权重
@@ -235,7 +235,7 @@ class SpeechEmotionTransformer(nn.Module):
         x = torch.mean(x, dim=1)
         
         # 5. 分类
-        # (batch, 256) -> (batch, 4)
+        # (batch, 256) -> (batch, num_classes)
         logits = self.classifier(x)
         
         return logits
