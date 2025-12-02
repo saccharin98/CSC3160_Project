@@ -170,7 +170,7 @@ class SpeechEmotionTransformer(nn.Module):
         num_heads=8,            # 注意力头数
         num_layers=8,           # Transformer层数 (从6增加到8)
         d_ff=2048,              # 前馈网络维度 (从1024扩大到2048)
-        num_classes=4,          # 情感类别数
+        num_classes=config.NUM_CLASSES,          # 情感类别数
         dropout=0.2,            # Dropout比例 (不激进: 0.2)
         max_len=5000            # 最大序列长度
     ):
