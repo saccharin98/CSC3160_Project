@@ -66,7 +66,6 @@ class Trainer:
             mode='min',
             factor=0.5,
             patience=5,
-            verbose=True
         )
         
         # TensorBoard记录器
@@ -110,13 +109,13 @@ class Trainer:
         # 进度条
         pbar = tqdm(self.train_loader, desc=f'Epoch {epoch}/{config.NUM_EPOCHS} [Train]')
         
-        for batch_idx, (mels, labels) in enumerate(pbar):
+        for batch_idx, (features, labels) in enumerate(pbar):
             # 1. 数据移到设备
-            mels = mels.to(self.device)      # (batch, time, n_mels)
-            labels = labels.to(self.device)  # (batch,)
+            features = features.to(self.device)  # (batch, time, feature_dim)
+            labels = labels.to(self.device)      # (batch,)
             
             # 2. 前向传播
-            outputs = self.model(mels)  # (batch, num_classes)
+            outputs = self.model(features)  # (batch, num_classes)
             loss = self.criterion(outputs, labels)
             
             # 3. 反向传播
@@ -149,63 +148,54 @@ class Trainer:
         return avg_loss, avg_acc
     
     def validate(self, epoch):
-        """验证模型"""
-        self.model.eval()
-        total_loss = 0
+        """
+        验证一个epoch
+        
+        参数:
+            epoch: 当前epoch编号
+        
+        返回:
+            avg_loss: 平均损失
+            avg_acc: 平均准确率
+        """
+        self.model.eval()  # 设置为评估模式
+        
+        total_loss = 0.0
         correct = 0
         total = 0
         
-        with torch.no_grad():
-            pbar = tqdm(self.val_loader, desc=f'Epoch {epoch}/{config.NUM_EPOCHS} [Val]  ')
-            
-            for batch_idx, (images, labels) in enumerate(pbar):
-                images = images.to(self.device)
-                labels = labels.to(self.device)
+        # 进度条
+        pbar = tqdm(self.val_loader, desc=f'Epoch {epoch}/{config.NUM_EPOCHS} [Val]  ')
+        
+        with torch.no_grad():  # 不计算梯度
+            for batch_idx, (features, labels) in enumerate(pbar):
+                # 1. 数据移到设备
+                features = features.to(self.device)  # (batch, time, feature_dim)
+                labels = labels.to(self.device)      # (batch,)
                 
-                outputs = self.model(images)
+                # 2. 前向传播
+                outputs = self.model(features)
                 loss = self.criterion(outputs, labels)
                 
+                # 3. 统计
                 total_loss += loss.item()
-                _, predicted = outputs.max(1)
+                _, predicted = torch.max(outputs, 1)
+                correct += (predicted == labels).sum().item()
                 total += labels.size(0)
-                correct += predicted.eq(labels).sum().item()
                 
-                # 安全的损失计算
-                num_batches = batch_idx + 1
-                current_loss = total_loss / num_batches
-                current_acc = 100. * correct / total if total > 0 else 0
-                
+                # 4. 更新进度条
+                current_loss = total_loss / (batch_idx + 1)
+                current_acc = 100.0 * correct / total
                 pbar.set_postfix({
                     'loss': f'{current_loss:.4f}',
                     'acc': f'{current_acc:.2f}%'
                 })
         
-        # 计算最终指标
+        # 计算平均值
         avg_loss = total_loss / len(self.val_loader) if len(self.val_loader) > 0 else 0
-        accuracy = 100. * correct / total if total > 0 else 0
+        avg_acc = 100.0 * correct / total if total > 0 else 0
         
-        return avg_loss, accuracy
-    
-    def _print_confusion_matrix(self, cm, epoch):
-        """
-        打印混淆矩阵
-        
-        参数:
-            cm: 混淆矩阵
-            epoch: epoch编号
-        """
-        print(f"\n混淆矩阵 (Epoch {epoch}):")
-        print("真实\\预测", end="")
-        for label in config.EMOTION_LABELS:
-            print(f"\t{label[:3]}", end="")
-        print()
-        
-        for i, label in enumerate(config.EMOTION_LABELS):
-            print(f"{label[:7]}\t", end="")
-            for j in range(config.NUM_CLASSES):
-                print(f"{cm[i][j]}\t", end="")
-            print()
-        print()
+        return avg_loss, avg_acc
     
     def save_checkpoint(self, epoch, val_acc, is_best=False):
         """
@@ -222,6 +212,7 @@ class Trainer:
             'optimizer_state_dict': self.optimizer.state_dict(),
             'scheduler_state_dict': self.scheduler.state_dict(),
             'val_acc': val_acc,
+            'best_val_acc': self.best_val_acc,
             'config': vars(config)
         }
         
@@ -365,7 +356,7 @@ def main():
         train_dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=True,
-        num_workers=config.NUM_WORKERS,
+        num_workers=0,
         pin_memory=True if device.type == 'cuda' else False
     )
     
@@ -373,7 +364,7 @@ def main():
         val_dataset,
         batch_size=config.BATCH_SIZE,
         shuffle=False,
-        num_workers=config.NUM_WORKERS,
+        num_workers=0,
         pin_memory=True if device.type == 'cuda' else False
     )
     

@@ -3,3 +3,4 @@ __pycache__
 verbose.txt
 /runs
 /checkpoints
+/models

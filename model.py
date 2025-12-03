@@ -2,7 +2,7 @@
 语音情感识别的Transformer模型
 
 架构:
-1. 输入: Mel频谱 (batch, time, n_mels)
+1. 输入: 特征 (batch, time, feature_dim) - Wav2Vec2(768) 或 Mel(80)
 2. 位置编码
 3. Transformer编码器层
 4. 分类头
@@ -109,13 +109,13 @@ class TransformerEncoderLayer(nn.Module):
             batch_first=True  # 输入格式: (batch, seq, feature)
         )
         
-        # 2. 前馈网络 (两层全连接) + Dropout
+        # 2. 前馈网络 (两层全连接)
         self.feed_forward = nn.Sequential(
             nn.Linear(d_model, d_ff),
-            nn.ReLU(),
-            nn.Dropout(dropout),  # 添加 Dropout
+            nn.GELU(),  # 使用 GELU 激活函数
+            nn.Dropout(dropout),
             nn.Linear(d_ff, d_model),
-            nn.Dropout(dropout)   # 添加 Dropout
+            nn.Dropout(dropout)
         )
         
         # 3. LayerNorm
@@ -154,25 +154,26 @@ class SpeechEmotionTransformer(nn.Module):
     语音情感识别的Transformer模型
     
     完整流程:
-    输入Mel频谱 → 线性投影 → 位置编码 → Transformer编码器 → 全局池化 → 分类
+    输入特征 → 线性投影 → 位置编码 → Transformer编码器 → 全局池化 → 分类
     
-    改进版（4倍参数量 + 适度 Dropout）:
-    - d_model: 256 -> 512 (2倍)
-    - d_ff: 1024 -> 2048 (2倍)
-    - num_layers: 6 -> 8 (增加层数)
-    - 分类头加深，添加 Dropout
+    增强版配置:
+    - input_dim: 768 (Wav2Vec2) 或 80 (Mel)
+    - d_model: 512
+    - num_layers: 8
+    - d_ff: 2048
+    - dropout: 0.2
     """
     
     def __init__(
         self,
-        input_dim=80,           # Mel频谱维度
-        d_model=512,            # 模型维度 (从256扩大到512)
-        num_heads=8,            # 注意力头数
-        num_layers=8,           # Transformer层数 (从6增加到8)
-        d_ff=2048,              # 前馈网络维度 (从1024扩大到2048)
-        num_classes=config.NUM_CLASSES,          # 情感类别数
-        dropout=0.2,            # Dropout比例 (不激进: 0.2)
-        max_len=5000            # 最大序列长度
+        input_dim=config.INPUT_DIM,     # 输入特征维度 (768 或 80)
+        d_model=config.D_MODEL,         # 模型维度 (512)
+        num_heads=config.NUM_HEADS,     # 注意力头数 (8)
+        num_layers=config.NUM_LAYERS,   # Transformer层数 (8)
+        d_ff=config.D_FF,               # 前馈网络维度 (2048)
+        num_classes=config.NUM_CLASSES, # 情感类别数 (8)
+        dropout=config.DROPOUT,         # Dropout比例 (0.2)
+        max_len=5000                    # 最大序列长度
     ):
         super().__init__()
         
@@ -180,11 +181,11 @@ class SpeechEmotionTransformer(nn.Module):
         self.d_model = d_model
         self.num_classes = num_classes
         
-        # 1. 输入投影层: 将Mel频谱投影到d_model维度
-        # (batch, time, 80) -> (batch, time, 512)
+        # 1. 输入投影层: 将输入特征投影到d_model维度
+        # (batch, time, input_dim) -> (batch, time, d_model)
         self.input_projection = nn.Sequential(
             nn.Linear(input_dim, d_model),
-            nn.Dropout(dropout)  # 添加 Dropout
+            nn.Dropout(dropout)
         )
         
         # 2. 位置编码
@@ -196,18 +197,21 @@ class SpeechEmotionTransformer(nn.Module):
             for _ in range(num_layers)
         ])
         
-        # 4. 分类头（加深 + Dropout）
+        # 4. 最终的 LayerNorm
+        self.final_norm = nn.LayerNorm(d_model)
+        
+        # 5. 分类头
         self.classifier = nn.Sequential(
             nn.Linear(d_model, d_model),          # 512 -> 512
-            nn.ReLU(),
-            nn.Dropout(dropout),                   # Dropout
+            nn.GELU(),
+            nn.Dropout(dropout),
             nn.Linear(d_model, d_model // 2),     # 512 -> 256
-            nn.ReLU(),
-            nn.Dropout(dropout),                   # Dropout
-            nn.Linear(d_model // 2, num_classes)  # 256 -> 4
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(d_model // 2, num_classes)  # 256 -> 8
         )
         
-        # 5. 初始化权重
+        # 6. 初始化权重
         self._init_weights()
     
     def _init_weights(self):
@@ -224,14 +228,14 @@ class SpeechEmotionTransformer(nn.Module):
         前向传播
         
         参数:
-            x: Mel频谱 (batch, time, n_mels)
+            x: 特征 (batch, time, feature_dim)
             mask: 注意力掩码 (可选)
         
         返回:
             logits: (batch, num_classes)
         """
         # 1. 输入投影
-        # (batch, time, 80) -> (batch, time, 512)
+        # (batch, time, input_dim) -> (batch, time, d_model)
         x = self.input_projection(x)
         
         # 2. 位置编码
@@ -241,12 +245,17 @@ class SpeechEmotionTransformer(nn.Module):
         for layer in self.encoder_layers:
             x = layer(x, mask)
         
-        # 4. 全局平均池化 (在时间维度上)
-        # (batch, time, 512) -> (batch, 512)
-        x = torch.mean(x, dim=1)
+        # 4. 最终的 LayerNorm
+        x = self.final_norm(x)
         
-        # 5. 分类
-        # (batch, 512) -> (batch, 4)
+        # 5. 全局平均池化 + 最大池化（融合）
+        # (batch, time, d_model) -> (batch, d_model)
+        x_avg = torch.mean(x, dim=1)  # 平均池化
+        x_max = torch.max(x, dim=1)[0]  # 最大池化
+        x = x_avg + x_max  # 融合两种池化
+        
+        # 6. 分类
+        # (batch, d_model) -> (batch, num_classes)
         logits = self.classifier(x)
         
         return logits
@@ -264,13 +273,13 @@ def create_model():
         model: SpeechEmotionTransformer模型
     """
     model = SpeechEmotionTransformer(
-        input_dim=config.N_MELS,
-        d_model=512,              # 扩大为 512
+        input_dim=config.INPUT_DIM,
+        d_model=config.D_MODEL,
         num_heads=config.NUM_HEADS,
-        num_layers=8,             # 增加到 8 层
-        d_ff=2048,                # 扩大为 2048
+        num_layers=config.NUM_LAYERS,
+        d_ff=config.D_FF,
         num_classes=config.NUM_CLASSES,
-        dropout=0.2,              # 不激进的 Dropout: 0.2
+        dropout=config.DROPOUT,
         max_len=config.MAX_TIME_STEPS
     )
     
@@ -282,9 +291,9 @@ def create_model():
 # ============================================
 
 if __name__ == '__main__':
-    print("=" * 60)
-    print("测试Transformer模型 (4倍参数量版本)")
-    print("=" * 60)
+    print("=" * 70)
+    print(f"测试Transformer模型 ({'Wav2Vec2' if config.USE_PRETRAINED else 'Mel'} 特征)")
+    print("=" * 70)
     
     # 1. 创建模型
     model = create_model()
@@ -294,6 +303,10 @@ if __name__ == '__main__':
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     
     print(f"\n模型信息:")
+    print(f"  输入维度: {config.INPUT_DIM}")
+    print(f"  模型维度: {config.D_MODEL}")
+    print(f"  层数: {config.NUM_LAYERS}")
+    print(f"  前馈维度: {config.D_FF}")
     print(f"  总参数量: {total_params:,}")
     print(f"  可训练参数: {trainable_params:,}")
     print(f"  模型大小: {total_params * 4 / 1024 / 1024:.2f} MB (float32)")
@@ -301,10 +314,10 @@ if __name__ == '__main__':
     # 3. 测试前向传播
     batch_size = 4
     time_steps = 300
-    n_mels = 80
+    input_dim = config.INPUT_DIM
     
     # 创建随机输入
-    x = torch.randn(batch_size, time_steps, n_mels)
+    x = torch.randn(batch_size, time_steps, input_dim)
     
     print(f"\n输入形状: {x.shape}")
     
@@ -321,6 +334,6 @@ if __name__ == '__main__':
     for i, emotion in enumerate(config.EMOTION_LABELS):
         print(f"  {emotion}: {probs[0, i]:.4f}")
     
-    print("\n" + "=" * 60)
+    print("\n" + "=" * 70)
     print("✓ 模型测试通过！")
-    print("=" * 60)
+    print("=" * 70)
